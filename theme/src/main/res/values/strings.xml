@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">DotGolf</string>
+    <string name="greeting_loading">Loading…</string>
+    <string name="greeting_fallback">Hello Android!</string>
+</resources>

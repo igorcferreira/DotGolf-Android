@@ -1,0 +1,314 @@
+format_version: "23"
+default_step_lib_source: https://github.com/bitrise-io/bitrise-steplib.git
+project_type: android
+app:
+  envs:
+  - TEST_SHARD_COUNT: 2
+  - MODULE: app
+  - VARIANT: "Release"
+  - APP_VERSION_NAME: "1.0"
+pipelines:
+  test:
+    workflows:
+      setup: {}
+      run_tests:
+        parallel: $TEST_SHARD_COUNT
+        depends_on:
+        - setup
+      run_instrumented_tests:
+        parallel: $TEST_SHARD_COUNT
+        depends_on:
+        - run_tests
+      tear_down:
+        depends_on:
+        - run_instrumented_tests
+    triggers:
+      pull_request:
+      - target_branch: "*"
+  deploy:
+    workflows:
+      setup: {}
+      run_tests:
+        parallel: $TEST_SHARD_COUNT
+        depends_on:
+        - setup
+      build_dot_golf:
+        depends_on:
+        - run_tests
+      tear_down:
+        depends_on:
+        - build_dot_golf
+    triggers:
+      push:
+      - branch: main
+  preview:
+    workflows:
+      setup: {}
+      build_dot_golf:
+        depends_on:
+        - setup
+      tear_down:
+        depends_on:
+        - build_dot_golf
+    triggers:
+      push:
+      - branch: dev
+workflows:
+  build_dot_golf:
+    summary: Create an APK file to install your app on a device or share it with
+      your team.
+    steps:
+    - bundle::_apply_theme:
+        inputs:
+        - RESOURCE_URL: $BITRISEIO_RES_ZIP_URL
+    - bundle::_download_keystore:
+        inputs:
+        - ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+        - ACCESS_KEY_SECRET: $AWS_SECRET_ACCESS_KEY
+        - KEYSTORE_NAME: fw_internal.keystore
+    - bundle::_build:
+        inputs:
+        - KEYSTORE_PASSWORD: $INTERNAL_KEYSTORE_PASSWORD
+        - KEYSTORE_ALIAS_PASSWORD: $INTERNAL_KEYALIAS_PASSWORD
+        - KEYSTORE_ALIAS: Allinternal
+        - APP_KEYSTORE_PATH: $BITRISE_SOURCE_DIR/fw_internal.keystore
+        - APPLICATION_ID: com.futureworkshops.dotgolf
+        - APP_VERSION_CODE: $BITRISE_BUILD_NUMBER
+        - APP_VERSION_NAME: $APP_VERSION_NAME
+  run_instrumented_tests:
+    summary: Run your Android instrumented tests and get the test report.
+    steps:
+    - bundle::_linter: {}
+    - bundle::_connected_tests: {}
+  run_tests:
+    summary: Run your Android unit tests and get the test report.
+    steps:
+    - bundle::_linter: {}
+    - bundle::_unit_tests: {}
+  setup:
+    steps:
+    - bundle::_preflight: {}
+    summary: The workflow will first clone your Git repository, cache your Gradle
+      dependencies and install Android tools.
+  tear_down:
+    steps:
+    - bundle::_post_flight: {}
+    summary: The workflow will save the report and assets.
+step_bundles:
+  _preflight:
+    title: Prepare Local files
+    steps:
+    - git-clone@8:
+        inputs:
+        - clone_into_dir: $BITRISE_SOURCE_DIR
+    - set-java-version@1:
+        inputs:
+        - set_java_version: "21"
+    - restore-gradle-cache@3: {}
+    - install-missing-android-tools@3:
+        inputs:
+        - gradlew_path: $BITRISE_SOURCE_DIR/gradlew
+  _build:
+    title: Build the release application
+    steps:
+    - gradle-runner@5:
+        inputs:
+        - gradle_task: |-
+            :app:assembleRelease :app:bundleRelease \
+              -Papp.applicationId=$APPLICATION_ID \
+              -Papp.versionCode=$APP_VERSION_CODE \
+              -Papp.versionName=$APP_VERSION_NAME \
+              -Papp.release.storeFile=$APP_KEYSTORE_PATH \
+              -Papp.release.storePassword=$KEYSTORE_PASSWORD \
+              -Papp.release.keyAlias=$KEYSTORE_ALIAS \
+              -Papp.release.keyPassword=$KEYSTORE_ALIAS_PASSWORD
+        - build_root_directory: $BITRISE_SOURCE_DIR
+        - gradlew_path: $BITRISE_SOURCE_DIR/gradlew
+    inputs:
+    - APPLICATION_ID: com.futureworkshops.dotgolf
+      opts:
+        title: Application ID
+        is_required: true
+        is_expand: true
+    - APP_VERSION_CODE: "1"
+      opts:
+        title: Version Code
+        is_required: true
+        is_expand: true
+    - APP_VERSION_NAME: "1.0"
+      opts:
+        title: Version Name
+        is_required: true
+        is_expand: true
+    - APP_KEYSTORE_PATH: ""
+      opts:
+        title: Keystore File Path
+        is_required: true
+        value_options: []
+        is_expand: true
+    - KEYSTORE_PASSWORD: ""
+      opts:
+        title: Keystore Password
+        is_required: true
+        is_sensitive: true
+        value_options: []
+        is_expand: true
+    - KEYSTORE_ALIAS: ""
+      opts:
+        title: Keystore Alias
+        is_required: true
+        is_expand: true
+    - KEYSTORE_ALIAS_PASSWORD: ""
+      opts:
+        title: Keystore Alias Password
+        is_required: true
+        is_expand: true
+        is_sensitive: true
+  _linter:
+    title: Run Linter
+    steps:
+    - android-lint@0:
+        inputs:
+        - project_location: $BITRISE_SOURCE_DIR
+        - variant: Debug
+  _unit_tests:
+    title: Run Unit Tests
+    steps:
+    - android-unit-test@1:
+        inputs:
+        - project_location: $BITRISE_SOURCE_DIR
+        - variant: Debug
+        - cache_level: none
+  _post_flight:
+    title: Clean the environment
+    steps:
+    - save-gradle-cache@1: {}
+    - deploy-to-bitrise-io@2: {}
+  _connected_tests:
+    title: Run Connected Tests
+    steps:
+    - avd-manager@2:
+        inputs:
+        - api_level: "$ANDROID_MIN_SDK"
+    - wait-for-android-emulator@1: {}
+    - gradle-runner@5:
+        inputs:
+        - gradlew_path: $BITRISE_SOURCE_DIR/gradlew
+        - gradle_task: |-
+            :app:connectedAndroidTest \
+              -Pandroid.testInstrumentationRunnerArguments.numShards=$BITRISE_IO_PARALLEL_TOTAL \
+              -Pandroid.testInstrumentationRunnerArguments.shardIndex=$BITRISE_IO_PARALLEL_INDEX
+    inputs:
+    - ANDROID_MIN_SDK: "30"
+      opts:
+        title: Android Min SDK
+  _download_keystore:
+    title: Download the Keystore
+    steps:
+    - s3-download@1:
+        title: Download keystore
+        inputs:
+        - aws_access_key: $ACCESS_KEY_ID
+        - aws_secret_access_key: $ACCESS_KEY_SECRET
+        - s3_bucket: $BUCKET
+        - output_location: $KEYSTORE_OUTPUT_PATH
+        - s3_filepath: $KEYSTORE_NAME
+        run_if: .IsCI
+    inputs:
+    - ACCESS_KEY_ID: ""
+      opts:
+        title: Access Key ID
+        is_required: true
+        is_expand: true
+        is_sensitive: true
+    - ACCESS_KEY_SECRET: ""
+      opts:
+        title: Access Key Secret
+        is_required: true
+        is_expand: true
+        value_options: []
+        is_sensitive: true
+    - BUCKET: fw.ci.certificates
+      opts:
+        title: Bucket
+        is_required: true
+        is_expand: true
+    - KEYSTORE_OUTPUT_PATH: $BITRISE_SOURCE_DIR
+      opts:
+        title: Keystore Output
+        is_required: true
+        is_expand: true
+    - KEYSTORE_NAME: ""
+      opts:
+        title: Keystore file name
+        is_required: true
+        is_expand: true
+  _apply_theme:
+    title: Apply Theme
+    steps:
+    - file-downloader@1:
+        title: Download Resources
+        inputs:
+        - source: $RESOURCE_URL
+        - destination: $RESOURCE_DOWNLOAD_PATH
+    - script@1:
+        title: Apply Resources
+        inputs:
+        - content: >
+            #!/usr/bin/env bash
+
+            # fail if any commands fails
+
+            set -e
+
+            # make pipelines' return status equal the last command to exit with
+            a non-zero status, or zero if all commands exit successfully
+
+            set -o pipefail
+
+            # debug log
+
+            set -x
+
+
+            SOURCE="${RESOURCE_DOWNLOAD_PATH}/${RESOURCE_ZIP_FILENAME}"
+
+            DESTINATION="${PROJECT_PATH}/theme/src/main/res"
+
+
+            if [ ! -f "$SOURCE" ]; then
+                echo "Resource zip files not present at $SOURCE"
+                exit 1
+            fi
+
+
+            if [ ! -d "$DESTINATION" ]; then
+                echo "Resources folder not available at $DESTINATION"
+                exit 1
+            fi
+
+
+            unzip -o "$SOURCE" -d "$DESTINATION"
+
+            rm "$SOURCE"
+    inputs:
+    - RESOURCE_URL: ""
+      opts:
+        title: Resource ZIP URL
+        is_required: true
+        is_expand: true
+    - RESOURCE_DOWNLOAD_PATH: $BITRISE_SOURCE_DIR/tmp
+      opts:
+        title: Resource Download Path
+        is_required: true
+        is_expand: true
+    - RESOURCE_ZIP_FILENAME: res.zip
+      opts:
+        title: Resource ZIP Filename
+        is_required: true
+        is_expand: true
+    - PROJECT_PATH: $BITRISE_SOURCE_DIR
+      opts:
+        title: Project Path
+        is_required: true
+        is_expand: true
